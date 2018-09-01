@@ -45,11 +45,9 @@ def parse_contents(contents, filename, date):
     decoded = base64.b64decode(content_string)
     try:
         if 'csv' in filename:
-            # Assume that the user uploaded a CSV file
             customer_df = pd.read_csv(
                 io.StringIO(decoded.decode('utf-8')))
         elif 'xls' in filename:
-            # Assume that the user uploaded an excel file
             customer_df = pd.read_excel(io.BytesIO(decoded))
     except Exception as e:
         print(e)
@@ -102,7 +100,7 @@ def parse_contents(contents, filename, date):
                 for i in range(num_topics):
                     df_dict['t_%i|dW'%i][0] += df.loc[df_index[unique_idx], 't_%i|dw'%i] *\
                                                wd_df.loc[df.loc[df_index[unique_idx], 'category'], 'w|d']
-                df_dict['category'] += df.loc[df_index[unique_idx], 'category'] + ";"
+                df_dict['category'] += df.loc[df_index[unique_idx], 'category'] + "; "
             norm = 0.0
             for i in range(num_topics):
                 norm += df_dict['t_%i|dW'%i][0]
@@ -118,9 +116,10 @@ def parse_contents(contents, filename, date):
             df_dict['merchant'] += df.loc[row_idx, 'merchant'] + "; "
         df_dict['age'] = df.loc[df_index[0], 'age']
         df_dict['gender'] = df.loc[df_index[0], 'gender']
-        return pd.DataFrame(df_dict, index=[df_index[0]])
+        return pd.DataFrame(df_dict, index=[df_dict['step']])
 
     tdW_df = customer_df.groupby('step').apply(temporal_tdw).reset_index(drop=True)
+    tdW_df.set_index('step', inplace=True)
 
     seed = 417
     np.random.seed(seed=seed)
@@ -140,15 +139,16 @@ def parse_contents(contents, filename, date):
                                     'g': topic_colors[:, 1],
                                     'b': topic_colors[:, 2]}, index=local_tdw.index)
 
-    go_x_vals_wt = {}
+    go_x_vals_wt, go_x_vals_wt_counts = {}, {}
     for word in words:
         go_x_vals_wt[word] = []
+        go_x_vals_wt_counts[word] = []
 
     for row_idx in customer_df.index:
         go_x_vals_wt[customer_df.loc[row_idx, 'category']].append(customer_df.loc[row_idx, 'step'])
 
     for word in words:
-        go_x_vals_wt[word] = np.unique(go_x_vals_wt[word])
+        go_x_vals_wt[word], go_x_vals_wt_counts[word] = np.unique(go_x_vals_wt[word], return_counts=True)
 
     go_y_vals_wt = {}
     go_y_axis = wd_df.sort_values(by='w|d', ascending=False).index
@@ -158,13 +158,26 @@ def parse_contents(contents, filename, date):
     go_text_wt = {}
 
     for word in words:
-        go_text_wt[word] = []
+        go_text_wt[word] = ["" for _ in range(go_x_vals_wt[word].shape[0])]
 
-    for row_idx in tdW_df.index:
-        go_text_wt[tdW_df.loc[row_idx, 'category']].append(\
-        "amount: %.02f<br>fraud: %s<br>merchant: %s"%(tdW_df.loc[row_idx, 'amount'],
-                                                      tdW_df.loc[row_idx, 'fraud'],
-                                                      tdW_df.loc[row_idx, 'merchant']))
+    step_idx_mapping = {}    
+    for word in words:
+        step_idx_mapping[word] = {}
+        for idx, step in enumerate(go_x_vals_wt[word]):
+            step_idx_mapping[word][step] = idx
+            if go_x_vals_wt_counts[word][idx] > 1:
+                go_text_wt[word][idx] = "amount: %.02f<br>fraud: %s<br>merchant: %s"%(tdW_df.loc[step, 'amount'],
+                                                                                      tdW_df.loc[step, 'fraud'],
+                                                                                      tdW_df.loc[step, 'merchant'])
+    
+    for row_idx in customer_df.index:
+        if go_x_vals_wt_counts[customer_df.loc[row_idx, 'category']][step_idx_mapping[customer_df.loc[row_idx,\
+            'category']][customer_df.loc[row_idx, 'step']]] == 1:
+            go_text_wt[customer_df.loc[row_idx, 'category']][step_idx_mapping[customer_df.loc[row_idx,\
+            'category']][customer_df.loc[row_idx, 'step']]] =\
+            "amount: %.02f<br>fraud: %s<br>merchant: %s"%(customer_df.loc[row_idx, 'amount'],
+                                                          customer_df.loc[row_idx, 'fraud'],
+                                                          customer_df.loc[row_idx, 'merchant'])
 
     trace_arr = []
 
@@ -200,7 +213,7 @@ def parse_contents(contents, filename, date):
                                                                         tdW_df.loc[row_idx, 'fraud']))
 
     trace_arr.append(go.Contour(z=topic_z_arr,
-                                x=tdW_df.step.as_matrix(),
+                                x=tdW_df.index.values,
                                 y=np.arange(num_topics),
                                 text=go_text_tdW,
                                 contours=dict(coloring='heatmap'),
@@ -210,13 +223,30 @@ def parse_contents(contents, filename, date):
                                )
                     )
 
+    fraud_non_fraud_arr = customer_df.fraud.as_matrix()
+    fraud_non_fraud_arr_steps = customer_df.step.as_matrix()
+    non_fraud_arr_steps = fraud_non_fraud_arr_steps[fraud_non_fraud_arr == 0]
+    fraud_arr_steps = fraud_non_fraud_arr_steps[fraud_non_fraud_arr != 0]
+
+    trace_arr.append(go.Scatter(name='is not fraud',
+                                yaxis='y3',
+                                mode='markers',
+                                x=non_fraud_arr_steps,
+                                y=[0] * non_fraud_arr_steps.shape[0],
+                                text=['is not fraud'] * non_fraud_arr_steps.shape[0],
+                                marker=dict(color=['rgb(0, 0, 0)' for _ in non_fraud_arr_steps],
+                                            size=18
+                                           )
+                               )
+                    )
+
     trace_arr.append(go.Scatter(name='is fraud',
                                 yaxis='y3',
                                 mode='markers',
-                                x=tdW_df.step.as_matrix(),
-                                y=tdW_df.fraud.as_matrix(),
-                                text=['is fraud'] * tdW_df.step.as_matrix().shape[0],
-                                marker=dict(color=['rgb(%i, 0, 0)'%(255 * min(1, int(i))) for i in tdW_df.fraud],
+                                x=fraud_arr_steps,
+                                y=[1] * fraud_arr_steps.shape[0],
+                                text=['is fraud'] * fraud_arr_steps.shape[0],
+                                marker=dict(color=['rgb(255, 0, 0)' for _ in fraud_arr_steps],
                                             size=18
                                            )
                                )
@@ -242,7 +272,7 @@ def parse_contents(contents, filename, date):
                                                                   words_colors_df.loc[word, 'b'])
                                                                             for word in words])))
 
-    shared_layout = dict(width = 1250,#5000,
+    shared_layout = dict(width = 1250,
                          height = 800,
                          title = 'Транзакции клиента d = %s'%customer_df.customer[0],
                          titlefont = dict(size = 36,
